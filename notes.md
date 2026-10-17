@@ -75,6 +75,17 @@ terminal 2:
 
 read-only hash error -95
 tee hash success: 6052eef1a76d3....
+### before a-write:
+OPEN  pid=4835  comm=tee  mode=-w  ino=3670022  size=6  path=/tmp/test.txt
+      hash: 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 (algo 4)
+OPEN  pid=4835  comm=tee  mode=r-  ino=3670022  size=6  path=/tmp/test.txt
+      hash: error -95 (Operation not supported)
+### before overwrite:
+OPEN  pid=4824  comm=tee  mode=-w  ino=3670022  size=11  path=/tmp/test.txt
+      hash: 6052eef1a76d3ff777269e8a1720524953b74c4d96e4689679c8982699a32beb (algo 4)
+OPEN  pid=4824  comm=tee  mode=r-  ino=3670022  size=11  path=/tmp/test.txt
+      hash: error -95 (Operation not supported)
+      
 ## imaprobe code -- 3 parts
 - imaprobe.bpf.c: kernel. two hooks, after filtering, call bpf_ima_file_hash, put the figure to ring buffer
 if Not File return;          // 过滤目录、设备等
@@ -87,6 +98,17 @@ bpf_ringbuf_submit(e, 0);           // 发给用户态
 - imaprobe.c: user.loader: load code to kernel, solve with loading error, get figure from ring buffer and print.
 - imaprobe.h: both. define record event form.
 
+### Finding 1: file_open sees the content before modification, even with O_TRUNC
+- Append (tee -a, O_WRONLY|O_APPEND): kernel hash = A (5891b5b5...), size=6
+  -> content before "more" was appended
+- Overwrite (tee, O_WRONLY|O_TRUNC): kernel hash = B (6052eef1...), size=11
+  -> content before truncation; if the hook ran after truncation we would see
+     size=0 and the empty-file hash e3b0c442...
+- Why: in do_open(), vfs_open() (which calls the file_open LSM hook) runs
+  before handle_truncate()
+- Meaning: the pre-modification hash can be measured race-free in the kernel.
+  User space could never do this for O_TRUNC: the old content is gone as soon
+  as open() returns.
   
 
 
