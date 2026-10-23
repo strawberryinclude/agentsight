@@ -35,7 +35,7 @@ APPS = sslsniff stdiocap process test_process_utils test_process_filter test_pro
 
 # Experimental programs: built only via `make experimental` (or by name), not
 # shipped in the default build or embedded into the collector.
-EXPERIMENTAL_APPS = browsertrace
+EXPERIMENTAL_APPS = browsertrace imaprobe
 
 # All test programs (no BPF skeleton needed)
 TEST_APPS = test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_codex_offsets test_sslsniff_output
