@@ -17,14 +17,26 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::oneshot;
 
 const SSL_READY_MARKER: &str = "AGENTSIGHT_SSL_READY";
+const PROCESS_READY_MARKER: &str = "AGENTSIGHT_PROCESS_READY";
 
-fn ssl_probe_reports_readiness(binary_path: &str) -> bool {
+/// Probes that print a readiness marker on stderr once their BPF programs are
+/// attached. A launched target is released only after it, so its first
+/// operations are not lost while the loader is still verifying programs.
+fn ready_marker(runner_name: Option<&str>) -> Option<&'static str> {
+    match runner_name {
+        Some("SSL") => Some(SSL_READY_MARKER),
+        Some("Process") => Some(PROCESS_READY_MARKER),
+        _ => None,
+    }
+}
+
+fn probe_reports_readiness(binary_path: &str, marker: &str) -> bool {
     // Direct `cargo build` can still embed the older vendored loader. Keep
     // its startup delay until `make build` refreshes the bundled BPF binary.
     std::fs::read(binary_path).is_ok_and(|bytes| {
         bytes
-            .windows(SSL_READY_MARKER.len())
-            .any(|window| window == SSL_READY_MARKER.as_bytes())
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
     })
 }
 
@@ -309,11 +321,14 @@ impl BinaryExecutor {
         let binary_path = self.binary_path.clone();
         let label = runner_label(runner_name.as_deref(), &binary_path);
 
-        // Wait for sslsniff's readiness marker before releasing a launched
+        // Wait for the probe's readiness marker before releasing a launched
         // client. A fixed delay can expire while a large static binary is
-        // still being scanned for probe offsets.
-        let wait_for_ssl_ready =
-            runner_name.as_deref() == Some("SSL") && ssl_probe_reports_readiness(&self.binary_path);
+        // still being scanned for probe offsets (sslsniff) or while the
+        // verifier is still checking programs (process).
+        let marker = ready_marker(runner_name.as_deref())
+            .filter(|marker| probe_reports_readiness(&self.binary_path, marker));
+        let wait_for_ready = marker.is_some();
+        let ready_label = runner_name.clone().unwrap_or_else(|| "probe".to_string());
         let (ready_tx, ready_rx) = oneshot::channel();
         let stderr_label = label.clone();
         tokio::spawn(async move {
@@ -330,7 +345,7 @@ impl BinaryExecutor {
                     }
                     Ok(_) => {
                         let trimmed = stderr_line.trim();
-                        if trimmed == SSL_READY_MARKER {
+                        if marker == Some(trimmed) {
                             if let Some(tx) = ready_tx.take() {
                                 let _ = tx.send(());
                             }
@@ -350,7 +365,7 @@ impl BinaryExecutor {
             }
         });
 
-        let startup_delay_ms = if wait_for_ssl_ready {
+        let startup_delay_ms = if wait_for_ready {
             None
         } else if self
             .additional_args
@@ -373,7 +388,7 @@ impl BinaryExecutor {
             }
         }
 
-        if wait_for_ssl_ready {
+        if wait_for_ready {
             match tokio::time::timeout(tokio::time::Duration::from_secs(10), ready_rx).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => {
@@ -382,15 +397,19 @@ impl BinaryExecutor {
                         ProbeProcessGuard::new(child.id(), needs_sudo).terminate();
                     }
                     return Err(RunnerError::from(match status {
-                        Some(status) => runner_startup_exit_message("SSL", status, needs_sudo),
-                        None => "SSL probe closed stderr before reporting readiness".to_string(),
+                        Some(status) => {
+                            runner_startup_exit_message(&ready_label, status, needs_sudo)
+                        }
+                        None => {
+                            format!("{ready_label} probe closed stderr before reporting readiness")
+                        }
                     }));
                 }
                 Err(_) => {
                     ProbeProcessGuard::new(child.id(), needs_sudo).terminate();
-                    return Err(RunnerError::from(
-                        "SSL probe did not report readiness within 10 seconds".to_string(),
-                    ));
+                    return Err(RunnerError::from(format!(
+                        "{ready_label} probe did not report readiness within 10 seconds"
+                    )));
                 }
             }
         }
@@ -566,6 +585,14 @@ impl Runner for BinaryRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_and_ssl_probes_have_readiness_markers() {
+        assert_eq!(ready_marker(Some("SSL")), Some(SSL_READY_MARKER));
+        assert_eq!(ready_marker(Some("Process")), Some(PROCESS_READY_MARKER));
+        assert_eq!(ready_marker(Some("Stdio")), None);
+        assert_eq!(ready_marker(None), None);
+    }
 
     #[test]
     fn sudo_startup_exit_message_names_noninteractive_sudo() {

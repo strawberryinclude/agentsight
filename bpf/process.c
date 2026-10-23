@@ -20,6 +20,7 @@
 #include "container_info.h"
 #include "process_ext/map_flush.h"
 #include "process_ext/userspace.h"
+#include "process_ext/content.h"
 
 #define MAX_COMMAND_LIST 256
 #define MAX_SEED_PIDS 4096
@@ -80,6 +81,8 @@ static struct env {
 	char cgroup_filter_path[256];
 	bool cgroup_filter_enabled;
 	bool cgroup_filter_children;
+	bool content_hash;
+	long content_hash_max_mb;
 } env = {
 	.verbose = false,
 	.min_duration_ms = 0,
@@ -88,6 +91,8 @@ static struct env {
 	.filter_mode = FILTER_MODE_PROC,
 	.pid = 0,
 	.session_id = 0,
+	.content_hash = false,
+	.content_hash_max_mb = 16,
 };
 
 /* Global PID tracker for userspace filtering */
@@ -99,6 +104,8 @@ static int g_overflow_fd = -1;
 static int g_exit_mem_fd = -1;
 static int g_file_open_dropped_fd = -1;
 static int g_file_open_prog_fd = -1;
+static int g_content_dropped_fd = -1;
+static uint64_t g_content_drops_reported;
 static uint64_t g_file_open_drops_reported;
 static long page_size_kb;
 
@@ -113,6 +120,7 @@ const char argp_program_doc[] =
 	"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [--session <sid>] [-m <mode>] [-v]\n"
 	"       [--trace-fs] [--trace-net] [--trace-signals] [--trace-mem] [--trace-cow] [--trace-all]\n"
 	"       [--cgroup-filter <path>] [--cgroup-filter-children] [--seed-pid <pid:ppid>]\n"
+	"       [--content-hash] [--content-hash-max-mb <MB>]\n"
 	"\n"
 	"FILTER MODES:\n"
 	"  0 (all):    Trace all processes and all read/write operations\n"
@@ -140,6 +148,8 @@ enum {
 	OPT_CGROUP_FILTER_CHILDREN,
 	OPT_SEED_PID,
 	OPT_HEARTBEAT,
+	OPT_CONTENT_HASH,
+	OPT_CONTENT_HASH_MAX_MB,
 };
 
 static const struct argp_option opts[] = {
@@ -160,6 +170,10 @@ static const struct argp_option opts[] = {
 	{ "cgroup-filter-children", OPT_CGROUP_FILTER_CHILDREN, NULL, 0, "Include descendants of --cgroup-filter path" },
 	{ "seed-pid", OPT_SEED_PID, "PID[:PPID]", 0, "Seed an existing tracked PID supplied by the collector" },
 	{ "heartbeat", OPT_HEARTBEAT, "SECONDS", 0, "Print start and periodic alive records" },
+	{ "content-hash", OPT_CONTENT_HASH, NULL, 0,
+	  "Record SHA-256 of file content before the agent's first write (in kernel, needs BPF LSM) and after its last write" },
+	{ "content-hash-max-mb", OPT_CONTENT_HASH_MAX_MB, "MB", 0,
+	  "Do not hash files larger than this (default 16)" },
 	{},
 };
 
@@ -319,6 +333,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.heartbeat_seconds = (unsigned)seconds;
 		break;
 	}
+	case OPT_CONTENT_HASH:
+		env.content_hash = true;
+		break;
+	case OPT_CONTENT_HASH_MAX_MB: {
+		char *end = NULL;
+		errno = 0;
+		long mb = strtol(arg, &end, 10);
+		if (errno || !end || *end || mb <= 0 || mb > 1024 * 1024) {
+			fprintf(stderr, "Invalid content hash size limit: %s\n", arg);
+			argp_usage(state);
+		}
+		env.content_hash_max_mb = mb;
+		break;
+	}
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;
@@ -357,8 +385,15 @@ static bool should_track_event_process(struct pid_tracker *tracker,
 {
 	if (process_in_target_session(pid))
 		return true;
-	if (env.session_id > 0)
-		return false;
+	if (env.session_id > 0) {
+		/* A descendant that left the session is still the agent's: agents
+		 * run tool commands with setsid() (Claude Code's Bash tool does).
+		 * The parent's exec event came first in the ring buffer, and the
+		 * kernel adds forked children to content_scope_pids before they run,
+		 * which also covers children of fork-without-exec subshells and
+		 * processes that exited before getsid() could see them. */
+		return pid_tracker_is_tracked(tracker, ppid) || content_pid_in_scope(pid);
+	}
 	return should_track_process(tracker, comm, pid, ppid);
 }
 
@@ -398,6 +433,110 @@ static bool can_trace_resolved_opens(void)
 static bool has_btf_func(const struct btf *btf, const char *name)
 {
 	return btf && btf__find_by_name_kind(btf, name, BTF_KIND_FUNC) >= 0;
+}
+
+/* Which content-hash hooks this kernel can run (see process_ext/bpf_content.h). */
+struct content_support {
+	bool enabled;
+	bool rename;
+	bool unlink;
+	const char *reason;
+};
+
+static bool bpf_lsm_active(void)
+{
+	char buf[512];
+	char *saveptr = NULL;
+	FILE *f = fopen("/sys/kernel/security/lsm", "r");
+	size_t n;
+
+	if (!f)
+		return false;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	for (char *tok = strtok_r(buf, ",\n", &saveptr); tok; tok = strtok_r(NULL, ",\n", &saveptr))
+		if (strcmp(tok, "bpf") == 0)
+			return true;
+	return false;
+}
+
+static struct content_support detect_content_support(void)
+{
+	struct content_support s = { .reason = "not requested" };
+	struct btf *btf;
+
+	if (!env.content_hash)
+		return s;
+	if (!bpf_lsm_active()) {
+		s.reason = "BPF LSM is not active (add bpf to the lsm= boot parameter)";
+		return s;
+	}
+	btf = btf__load_vmlinux_btf();
+	if (!has_btf_func(btf, "bpf_lsm_file_open"))
+		s.reason = "kernel has no BPF LSM file_open hook";
+	else if (!has_btf_func(btf, "ima_file_hash"))
+		s.reason = "kernel has no IMA (CONFIG_IMA)";
+	else if (!has_btf_func(btf, "bpf_lsm_file_free_security"))
+		s.reason = "kernel has no BPF LSM file_free_security hook";
+	else {
+		s.enabled = true;
+		s.reason = NULL;
+		s.rename = has_btf_func(btf, "bpf_lsm_path_rename");
+		s.unlink = has_btf_func(btf, "bpf_lsm_path_unlink");
+	}
+	btf__free(btf);
+	return s;
+}
+
+static void print_content_config(const struct content_support *s)
+{
+	struct timespec ts;
+
+	if (!env.content_hash)
+		return;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	printf("{\"timestamp\":%llu,\"event\":\"CONTENT_HASH_CONFIG\",\"enabled\":%s",
+	       (unsigned long long)ts.tv_sec * 1000000000ULL + ts.tv_nsec,
+	       s->enabled ? "true" : "false");
+	if (s->enabled)
+		printf(",\"rename_hook\":%s,\"unlink_hook\":%s,"
+		       "\"max_bytes\":%lld,\"session\":%d",
+		       s->rename ? "true" : "false", s->unlink ? "true" : "false",
+		       env.content_hash_max_mb * 1024LL * 1024, env.session_id);
+	else
+		printf(",\"reason\":\"%s\"", s->reason ? s->reason : "unknown");
+	printf("}\n");
+	fflush(stdout);
+	if (!s->enabled)
+		fprintf(stderr, "process: content hashing disabled: %s\n", s->reason ? s->reason : "unknown");
+}
+
+static void report_content_drops(void)
+{
+	uint32_t zero = 0;
+	int ncpus = libbpf_num_possible_cpus();
+	uint64_t total = 0;
+	uint64_t *counts;
+
+	if (g_content_dropped_fd < 0 || !content_enabled || ncpus <= 0)
+		return;
+	counts = calloc(ncpus, sizeof(*counts));
+	if (!counts)
+		return;
+	if (!bpf_map_lookup_elem(g_content_dropped_fd, &zero, counts)) {
+		for (int i = 0; i < ncpus; i++)
+			total += counts[i];
+		if (total > g_content_drops_reported) {
+			printf("{\"timestamp\":%llu,\"event\":\"CONTENT_HASH_LOST\","
+			       "\"pid\":0,\"comm\":\"process\",\"count\":%llu}\n",
+			       (unsigned long long)content_now_ns(),
+			       (unsigned long long)(total - g_content_drops_reported));
+			fflush(stdout);
+			g_content_drops_reported = total;
+		}
+	}
+	free(counts);
 }
 
 static void report_file_open_drops(void)
@@ -480,11 +619,71 @@ static void configure_optional_programs(struct process_bpf *skel)
 
 #undef SET_AUTOLOAD
 
+static struct bpf_link *g_content_links[5];
+
+static void detach_content_programs(void)
+{
+	for (size_t i = 0; i < sizeof(g_content_links) / sizeof(g_content_links[0]); i++) {
+		bpf_link__destroy(g_content_links[i]);
+		g_content_links[i] = NULL;
+	}
+}
+
+/* Attach the content hooks that were loaded. file_open and file_free are
+ * required; rename/unlink and fork-time scope inheritance are optional extras
+ * (without content_fork, children are scoped when user space sees their exec). */
+static bool attach_content_programs(struct process_bpf *skel)
+{
+	struct bpf_program *progs[5] = {
+		skel->progs.content_file_open, skel->progs.content_file_free,
+		skel->progs.content_path_rename, skel->progs.content_path_unlink,
+		skel->progs.content_fork,
+	};
+
+	for (int i = 0; i < 5; i++) {
+		if (!bpf_program__autoload(progs[i]))
+			continue;
+		g_content_links[i] = bpf_program__attach(progs[i]);
+		if (!g_content_links[i]) {
+			fprintf(stderr, "process: failed to attach %s: %d\n",
+				bpf_program__name(progs[i]), -errno);
+			if (i < 2) {
+				detach_content_programs();
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 static void configure_process_skel(struct process_bpf *skel, bool resolved_opens,
 				   bool need_pid_filter, bool need_cgroup_filter,
-				   uint64_t cgroup_filter_id)
+				   uint64_t cgroup_filter_id,
+				   const struct content_support *content)
 {
+	bool hash = content->enabled;
+
 	configure_optional_programs(skel);
+	bpf_program__set_autoload(skel->progs.content_file_open, hash);
+	bpf_program__set_autoload(skel->progs.content_file_free, hash);
+	bpf_program__set_autoload(skel->progs.content_path_rename, hash && content->rename);
+	bpf_program__set_autoload(skel->progs.content_path_unlink, hash && content->unlink);
+	bpf_program__set_autoload(skel->progs.content_fork, hash);
+	bpf_program__set_autoattach(skel->progs.content_fork, false);
+	bpf_program__set_autoattach(skel->progs.content_file_open, false);
+	bpf_program__set_autoattach(skel->progs.content_file_free, false);
+	bpf_program__set_autoattach(skel->progs.content_path_rename, false);
+	bpf_program__set_autoattach(skel->progs.content_path_unlink, false);
+	/* Every record is a full struct event (~4.5 KiB, the path buffer), so
+	 * the default 1 MiB ring holds ~230 events. Content hashing adds 2-4
+	 * records per edited file; an agent that edits a few hundred files in a
+	 * burst would overflow it. 16 MiB holds ~3600 (kernel memory, only
+	 * while hashing is on). */
+	if (hash)
+		bpf_map__set_max_entries(skel->maps.rb, 16 << 20);
+	skel->rodata->trace_content = hash;
+	skel->rodata->content_target_session = env.session_id > 0 ? (unsigned int)env.session_id : 0;
+	skel->rodata->content_hash_max_bytes = env.content_hash_max_mb * 1024LL * 1024;
 	bpf_program__set_autoload(skel->progs.trace_file_open_exit, resolved_opens);
 	bpf_program__set_autoload(skel->progs.trace_openat, !resolved_opens);
 	bpf_program__set_autoload(skel->progs.trace_open, !resolved_opens);
@@ -912,6 +1111,7 @@ static int seed_initial_pids(struct pid_tracker *tracker)
 				add_tracked_pid_to_bpf(pid);
 				tracked_count++;
 			}
+			content_scope_add(pid);
 		} else if (env.verbose) {
 			fprintf(stderr, "Warning: Failed to add seeded PID %d to tracker (table full)\n", pid);
 		}
@@ -934,6 +1134,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 				// Remove from tracker regardless
 				pid_tracker_remove(tracker, e->pid);
 				remove_tracked_pid_from_bpf(e->pid);
+				content_scope_remove(e->pid);
 
 				// Only report if tracked (or if in ALL/PROC mode)
 				if (!is_tracked && tracker->filter_mode == FILTER_MODE_FILTER) {
@@ -971,6 +1172,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			if (should_track) {
 				pid_tracker_add(tracker, e->pid, e->ppid);
 				add_tracked_pid_to_bpf(e->pid);
+				content_scope_add(e->pid);
 
 				print_exec_event(e);
 			} else if (tracker->filter_mode == FILTER_MODE_FILTER) {
@@ -1016,6 +1218,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 			// Report the FILE_OPEN event with count
 			print_file_open_event(e, e->timestamp_ns, count, strlen(warning_msg) > 0 ? warning_msg : NULL);
+			content_on_file_open(e);
+			break;
+
+		case EVENT_TYPE_FILE_CONTENT:
+			if (content_enabled)
+				content_on_kernel_event(e);
 			break;
 
 		default:
@@ -1102,26 +1310,46 @@ int main(int argc, char **argv)
 		}
 		need_cgroup_filter = true;
 	}
-	configure_process_skel(skel, resolved_opens, need_pid_filter,
-			       need_cgroup_filter, cgroup_filter_id);
+	struct content_support content = detect_content_support();
+	bool want_resolved = resolved_opens;
+	bool want_content = content.enabled;
 
-	/* Load & verify BPF programs */
-	err = process_bpf__load(skel);
-	if (err && resolved_opens) {
-		fprintf(stderr, "process: resolved file hook failed to load; using syscall fallback\n");
-		process_bpf__destroy(skel);
-		skel = process_bpf__open();
+	/* Load & verify. Content hashing is an add-on and must never take down the
+	 * tracer, and its failure must not be blamed on the resolved-open hook (or
+	 * the other way round), so try every combination, best first:
+	 * (content, resolved) (content, syscall) (resolved) (syscall). */
+	err = -1;
+	for (int attempt = 0; attempt < 4 && err; attempt++) {
+		bool try_content = !(attempt & 2);
+		bool try_resolved = !(attempt & 1);
+
+		if ((try_content && !want_content) || (try_resolved && !want_resolved))
+			continue;
 		if (!skel) {
-			err = -ENOMEM;
-			goto cleanup;
+			skel = process_bpf__open();
+			if (!skel) {
+				err = -ENOMEM;
+				goto cleanup;
+			}
 		}
-		resolved_opens = false;
+		content.enabled = try_content;
+		resolved_opens = try_resolved;
 		configure_process_skel(skel, resolved_opens, need_pid_filter,
-				       need_cgroup_filter, cgroup_filter_id);
+				       need_cgroup_filter, cgroup_filter_id, &content);
 		err = process_bpf__load(skel);
-	} else if (!resolved_opens) {
-		fprintf(stderr, "process: resolved file opens unavailable; using syscall fallback\n");
+		if (err) {
+			fprintf(stderr, "process: load failed (content_hash=%d resolved_opens=%d): %d\n",
+				try_content, try_resolved, err);
+			process_bpf__destroy(skel);
+			skel = NULL;
+		}
 	}
+	if (!err && want_content && !content.enabled) {
+		fprintf(stderr, "process: content hash hooks failed to load; continuing without them\n");
+		content.reason = "content hash BPF programs failed to load";
+	}
+	if (!err && !resolved_opens)
+		fprintf(stderr, "process: resolved file opens unavailable; using syscall fallback\n");
 	if (err) {
 		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
 		goto cleanup;
@@ -1136,6 +1364,10 @@ int main(int argc, char **argv)
 		bpf_map__fd(skel->maps.file_open_dropped) : -1;
 	g_file_open_prog_fd = resolved_opens ?
 		bpf_program__fd(skel->progs.trace_file_open_exit) : -1;
+	content_enabled = content.enabled;
+	content_max_bytes = env.content_hash_max_mb * 1024LL * 1024;
+	content_scope_fd = bpf_map__fd(skel->maps.content_scope_pids);
+	g_content_dropped_fd = bpf_map__fd(skel->maps.content_dropped);
 
 	if (need_cgroup_filter && env.cgroup_filter_children) {
 		int cgroups = populate_cgroup_filter_map(env.cgroup_filter_path, true, g_tracked_cgroups_fd);
@@ -1162,12 +1394,23 @@ int main(int argc, char **argv)
 			env.seed_count, tracked_count);
 	}
 
-	/* Attach tracepoints */
+	/* Attach tracepoints. Content hooks are attached on their own below. */
 	err = process_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "Failed to attach BPF skeleton\n");
 		goto cleanup;
 	}
+	if (content.enabled && !attach_content_programs(skel)) {
+		content.enabled = false;
+		content.reason = "content hash BPF programs failed to attach";
+		content_enabled = false;
+	}
+	/* With fork-time inheritance attached, the kernel knows the whole agent
+	 * tree in session mode: filter resolved file opens there. */
+	if (content.enabled && g_content_links[4] && env.session_id > 0 &&
+	    env.filter_mode == FILTER_MODE_FILTER)
+		skel->bss->content_scope_complete = true;
+	print_content_config(&content);
 
 	/* Set up ring buffer polling with pid_tracker as context */
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &pid_tracker, NULL);
@@ -1176,6 +1419,11 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to create ring buffer\n");
 		goto cleanup;
 	}
+
+	/* Programs are attached and the ring buffer is open: a launched target
+	 * can be released now (the collector waits for this line). */
+	fprintf(stderr, "AGENTSIGHT_PROCESS_READY\n");
+	fflush(stderr);
 
 	uint64_t last_flush_time = 0;
 	uint64_t last_cgroup_refresh_time = 0;
@@ -1186,10 +1434,13 @@ int main(int argc, char **argv)
 
 	/* Process events */
 	while (!exiting) {
-		int poll_ms = POLL_TIMEOUT_MS;
+		/* Wake up often enough to honour the content-hash debounce. */
+		int poll_ms = content_dirty_count > 0 ? CONTENT_FLUSH_EVERY_MS : POLL_TIMEOUT_MS;
 
 		err = ring_buffer__poll(rb, poll_ms);
 		report_file_open_drops();
+		report_content_drops();
+		content_flush_dirty(false);
 		/* Ctrl-C will cause -EINTR */
 		if (err == -EINTR) {
 			err = 0;
@@ -1227,11 +1478,14 @@ int main(int argc, char **argv)
 	if (g_agg_map_fd >= 0)
 		flush_agg_map(g_agg_map_fd);
 	report_file_open_drops();
+	content_flush_dirty(true);
+	report_content_drops();
 	print_clock_sync_anchor("end");
 
 cleanup:
 	/* Clean up */
 	ring_buffer__free(rb);
+	detach_content_programs();
 	process_bpf__destroy(skel);
 	
 	/* Free allocated command strings */

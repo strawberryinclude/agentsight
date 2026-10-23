@@ -561,6 +561,52 @@ pub(crate) fn print_audit_rows(rows: &[AuditEventRow]) {
     }
 }
 
+fn short_hash(hash: Option<&str>) -> String {
+    hash.map(|h| h.chars().take(12).collect())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn hash_source_label(source: Option<&str>) -> &'static str {
+    match source {
+        Some("kernel_ima") => "kernel",
+        Some("userspace") => "user",
+        Some(_) => "other",
+        None => "",
+    }
+}
+
+pub(crate) fn print_file_content_rows(
+    rows: &[crate::view::file_content::FileContentReportRow],
+    no_content_events: bool,
+) {
+    if no_content_events {
+        println!("No file content hashes in this session.");
+        println!("Record with `agentsight record -- <command>` on a kernel with BPF LSM enabled.");
+        return;
+    }
+    println!("File content (sha256, first 12 hex; --json for full hashes)");
+    println!(
+        "{:<10} {:<14} {:<20} {:<20} path",
+        "outcome", "method", "before", "after"
+    );
+    for row in rows {
+        let before = format!(
+            "{} {}",
+            short_hash(row.before_sha256.as_deref()),
+            hash_source_label(row.before_source.as_deref())
+        );
+        let after = format!(
+            "{} {}",
+            short_hash(row.after_sha256.as_deref()),
+            hash_source_label(row.after_source.as_deref())
+        );
+        println!(
+            "{:<10} {:<14} {:<20} {:<20} {}",
+            row.outcome, row.method, before, after, row.path
+        );
+    }
+}
+
 pub(crate) fn print_llm_prompts(rows: &[LlmCallRow]) {
     println!("LLM prompts");
     println!(

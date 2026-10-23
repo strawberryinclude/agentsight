@@ -2,6 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 mod canonical;
+pub mod file_content;
 pub(crate) mod llm;
 mod media;
 pub mod process_select;
@@ -39,6 +40,10 @@ pub struct MaterializedView {
     sessions: BTreeMap<String, SessionRow>,
     network_targets: BTreeMap<String, NetworkTargetRow>,
     resource_samples: Vec<ResourceSampleRow>,
+    /// Per-inode content-hash state, keyed "dev:ino" (see file_content.rs).
+    file_contents: BTreeMap<String, file_content::FileContentState>,
+    /// Kernel events the tracer could not deliver (ring buffer full).
+    content_events_lost: u64,
     audit_order: VecDeque<String>,
     sinks: Vec<Box<dyn ViewSink>>,
     pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
@@ -96,6 +101,8 @@ impl MaterializedView {
             sessions: self.sessions.clone(),
             network_targets: self.network_targets.clone(),
             resource_samples: self.resource_samples.clone(),
+            file_contents: self.file_contents.clone(),
+            content_events_lost: self.content_events_lost,
             audit_order: self.audit_order.clone(),
             sinks: Vec::new(),
             pending: self.pending.clone(),

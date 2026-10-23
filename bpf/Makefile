@@ -31,14 +31,14 @@ CFLAGS += $(ASAN_FLAGS)
 ALL_LDFLAGS += $(ASAN_FLAGS)
 endif
 
-APPS = sslsniff stdiocap process test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_codex_offsets test_sslsniff_output # minimal minimal_legacy uprobe kprobe fentry usdt sockfilter tc ksyscall
+APPS = sslsniff stdiocap process test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_process_ext_content test_codex_offsets test_sslsniff_output # minimal minimal_legacy uprobe kprobe fentry usdt sockfilter tc ksyscall
 
 # Experimental programs: built only via `make experimental` (or by name), not
 # shipped in the default build or embedded into the collector.
 EXPERIMENTAL_APPS = browsertrace imaprobe
 
 # All test programs (no BPF skeleton needed)
-TEST_APPS = test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_codex_offsets test_sslsniff_output
+TEST_APPS = test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_process_ext_content test_codex_offsets test_sslsniff_output
 
 CARGO ?= $(shell which cargo)
 ifeq ($(strip $(CARGO)),)
@@ -122,7 +122,7 @@ help:
 test: unit-test
 	@$(MAKE) runtime-test
 
-unit-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_codex_offsets test_sslsniff_output
+unit-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types test_process_ext_content test_codex_offsets test_sslsniff_output
 	@echo "Running process_utils tests..."
 	@./test_process_utils
 	@echo ""
@@ -134,6 +134,9 @@ unit-test: test_process_utils test_process_filter test_process_ext_map_flush tes
 	@echo ""
 	@echo "Running process_ext types tests..."
 	@./test_process_ext_types
+	@echo ""
+	@echo "Running process_ext content hash tests..."
+	@./test_process_ext_content
 	@echo ""
 	@echo "Running codex offset tests..."
 	@./test_codex_offsets
@@ -237,6 +240,10 @@ $(OUTPUT)/test_process_ext_types.o: tests/test_process_ext_types.c $(wildcard *.
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) -I. -c $< -o $@
 
+$(OUTPUT)/test_process_ext_content.o: tests/test_process_ext_content.c process.h jsonl.h process_ext/content.h $(LIBBPF_OBJ) | $(OUTPUT)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
 $(OUTPUT)/test_codex_offsets.o: test_codex_offsets.c codex_offsets.h | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) -I. -c $< -o $@
@@ -275,6 +282,11 @@ test_process_ext_map_flush: $(OUTPUT)/test_process_ext_map_flush.o $(LIBBPF_OBJ)
 test_process_ext_types: $(OUTPUT)/test_process_ext_types.o | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -o $@
+
+# content.h syncs the scope map with bpf_map_*() from libbpf.
+test_process_ext_content: $(OUTPUT)/test_process_ext_content.o $(LIBBPF_OBJ) | $(OUTPUT)
+	$(call msg,BINARY,$@)
+	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
 
 test_codex_offsets: $(OUTPUT)/test_codex_offsets.o | $(OUTPUT)
 	$(call msg,BINARY,$@)

@@ -10,3 +10,6 @@
 /test_process_ext_mem_info
 /test_process_ext_types
 /test_sslsniff_output
+/test_process_ext_content
+/imaprobe
+/test_codex_offsets

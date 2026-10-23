@@ -21,6 +21,8 @@ pub enum EventKind {
     FsOpen,
     FsWrite,
     FsMutation,
+    /// Content hash lifecycle of one file (process tracer `--content-hash`).
+    FsContent,
     StdioMessage,
     StdioRpc,
     ResourceSample,
@@ -141,6 +143,9 @@ pub fn normalize_event(event: &Event, raw_event_id: String) -> CanonicalEvent {
         kind = match event_name {
             "EXEC" => EventKind::ProcessExec,
             "EXIT" => EventKind::ProcessExit,
+            // Loss reports matter for content completeness: a dropped
+            // event can be a missing "before" or a missing file.
+            "FILE_CONTENT" | "CONTENT_HASH_LOST" | "FILE_OPEN_LOST" => EventKind::FsContent,
             e if e.contains("FILE_OPEN") => EventKind::FsOpen,
             e if e.contains("FILE_WRITE") => EventKind::FsWrite,
             e if e.contains("FILE_") => EventKind::FsMutation,
@@ -266,6 +271,11 @@ fn build_summary(
             .or_else(|| data.get("filepath"))
             .and_then(|v| v.as_str())
             .map(|p| format!("file {}", p)),
+        EventKind::FsContent => Some(format!(
+            "content {} {}",
+            data.get("phase").and_then(|v| v.as_str()).unwrap_or("?"),
+            data.get("filepath").and_then(|v| v.as_str()).unwrap_or("")
+        )),
         EventKind::StdioMessage => data
             .get("stream")
             .and_then(|v| v.as_str())

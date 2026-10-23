@@ -4,14 +4,18 @@
 use crate::model::{AGENT_NATIVE_SOURCE, SnapshotOptions, TokenSummary};
 use crate::output::{
     FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
-    print_json, print_llm_prompts, print_session_summary, print_token_summary, prompt_text_chars,
-    sorted_top_counts,
+    print_file_content_rows, print_json, print_llm_prompts, print_session_summary,
+    print_token_summary, prompt_text_chars, sorted_top_counts,
 };
 use crate::sources::agent_native as agent_native_sessions;
 #[cfg(test)]
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::sources::sqlite::load_view_with_observed_session_prompts as load_sqlite_view_with_observed_session_prompts;
 use crate::view::MaterializedView;
+use crate::view::file_content::{
+    FILE_CONTENT_AUDIT_TYPE, FILE_CONTENT_LOST_AUDIT_TYPE, FileContentReportRow,
+    file_content_report,
+};
 
 #[cfg(test)]
 use crate::sinks::sqlite::SqliteStore;
@@ -65,6 +69,36 @@ pub(crate) fn run_audit_query(
         print_json(&rows)?;
     } else {
         print_audit_rows(&rows);
+    }
+    Ok(())
+}
+
+pub(crate) fn run_files_query(
+    db: Option<&str>,
+    json: bool,
+    include_read_only: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let view = load_agentsight_view(db)?;
+    let rows = view.audit_rows(Some(FILE_CONTENT_AUDIT_TYPE), 10_000);
+    // On stderr, so `--json` output stays a plain array.
+    if let Some(lost) = view
+        .audit_rows(Some(FILE_CONTENT_LOST_AUDIT_TYPE), 1)
+        .first()
+        .and_then(|row| row.details["lost"].as_u64())
+    {
+        eprintln!(
+            "warning: the tracer lost {lost} kernel events (ring buffer full); \
+             this list may be incomplete"
+        );
+    }
+    let report: Vec<FileContentReportRow> = file_content_report(&rows)
+        .into_iter()
+        .filter(|row| include_read_only || row.method != "read_only")
+        .collect();
+    if json {
+        print_json(&report)?;
+    } else {
+        print_file_content_rows(&report, rows.is_empty());
     }
     Ok(())
 }

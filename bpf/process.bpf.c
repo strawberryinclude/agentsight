@@ -63,6 +63,7 @@ struct {
 const volatile unsigned long long min_duration_ns = 0;
 
 #include "process_ext/bpf_common.h"
+#include "process_ext/bpf_content.h"
 
 /* Bash readline uretprobe handler */
 SEC("uretprobe//usr/bin/bash:readline")
@@ -391,6 +392,14 @@ int BPF_PROG(trace_file_open_exit, struct file *file)
 	/* Keep PID/comm filtering in the existing userspace tracker so an open
 	 * racing the process exec event is handled in ring-buffer order. */
 	if (bpf_get_func_ret(ctx, &ret) || (int)ret || !is_cgroup_tracked())
+		return 0;
+	/* IMA's private re-open while content hashing is not an agent open. */
+	{
+		u64 id = bpf_get_current_pid_tgid();
+		if (bpf_map_lookup_elem(&content_inflight, &id))
+			return 0;
+	}
+	if (content_scope_complete && !content_in_scope())
 		return 0;
 	task = (struct task_struct *)bpf_get_current_task();
 	if (BPF_CORE_READ(task, flags) & PF_KTHREAD)

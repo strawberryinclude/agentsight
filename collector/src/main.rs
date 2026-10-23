@@ -36,8 +36,8 @@ mod view;
 use analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics};
 use binary_extractor::BinaryExtractor;
 use cli_db::{
-    configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query,
-    run_token_query,
+    configured_db_path, run_audit_query, run_db_summary, run_export, run_files_query,
+    run_prompts_query, run_token_query,
 };
 use cmd_bind::run_bind;
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
@@ -286,6 +286,12 @@ enum Commands {
         /// Server port for the web UI
         #[arg(long, default_value_t = 7395)]
         server_port: u16,
+        /// Do not hash file content (before the agent's first write, after its last write)
+        #[arg(long)]
+        no_content_hash: bool,
+        /// Do not capture TLS traffic (process, file and content tracing only)
+        #[arg(long)]
+        no_ssl: bool,
         /// Optional command to launch and trace. Use -c/--comm or -p/--pid instead to attach.
         #[arg(last = true)]
         command: Vec<String>,
@@ -343,6 +349,18 @@ enum ReportCommands {
         /// Emit JSON output
         #[arg(long)]
         json: bool,
+    },
+    /// Per-file content hashes: before the agent's first write, after its last write
+    Files {
+        /// SQLite database path (defaults to latest agentsight-*.db)
+        #[arg(long)]
+        db: Option<String>,
+        /// Emit JSON output with full hashes and hash sources
+        #[arg(long)]
+        json: bool,
+        /// Include files the agent only read
+        #[arg(long)]
+        all: bool,
     },
     /// Show captured LLM prompts and responses when observable
     Prompts {
@@ -508,6 +526,10 @@ async fn run_report(
                 *json,
             )?;
         }
+        Some(ReportCommands::Files { db: own, json, all }) => {
+            let db = own.as_ref().or(db.as_ref()).cloned();
+            run_files_query(report_db_or_local(&db, local).as_deref(), *json, *all)?;
+        }
         Some(ReportCommands::Prompts {
             db: own,
             limit,
@@ -585,6 +607,8 @@ async fn run_with_extractor(
             db,
             no_server,
             server_port,
+            no_content_hash,
+            no_ssl,
             command,
         } => {
             if !command.is_empty() {
@@ -602,6 +626,8 @@ async fn run_with_extractor(
                     &cli.listen,
                     *server_port,
                     true,
+                    !*no_content_hash,
+                    !*no_ssl,
                 )
                 .await
                 .map_err(convert_runner_error)?;
@@ -629,6 +655,8 @@ async fn run_with_extractor(
                     server: !*no_server,
                     server_listen: Some(cli.listen.clone()),
                     server_port: *server_port,
+                    content_hash: !*no_content_hash,
+                    ssl: !*no_ssl,
                     ..TraceConfig::for_record()
                 },
             )

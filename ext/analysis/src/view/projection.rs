@@ -51,6 +51,7 @@ impl MaterializedView {
             }
             EventKind::ProcessExec => self.ingest_process_audit(event, "exec"),
             EventKind::ProcessExit => self.ingest_process_audit(event, "exit"),
+            EventKind::FsContent => self.ingest_file_content(event),
             EventKind::FsOpen if is_writable_open(event) => self.ingest_file_audit(event),
             EventKind::FsWrite | EventKind::FsMutation => self.ingest_file_audit(event),
             EventKind::Unknown if is_process_summary_write_event(event) => {

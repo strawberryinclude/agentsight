@@ -92,6 +92,8 @@ pub(crate) async fn run_exec(
     server_listen: &str,
     server_port: u16,
     print_summary: bool,
+    content_hash: bool,
+    ssl: bool,
 ) -> Result<Option<String>, RunnerError> {
     let program = command.first().ok_or_else(|| {
         RunnerError::from("record requires a command to run, e.g. `agentsight record -- claude`")
@@ -114,6 +116,15 @@ pub(crate) async fn run_exec(
     print_record_header();
 
     let ssl_binary_path = match binary_path_override {
+        // Without TLS capture there is nothing to attach to; still check the
+        // program resolves so a typo fails before anything is loaded.
+        None if !ssl => {
+            let p = resolve_binary_path(program).map_err(|e| {
+                RunnerError::from(format!("failed to resolve '{}': {}", program, e))
+            })?;
+            print_record_auto_binary_path(&p);
+            None
+        }
         Some(p) => {
             print_record_provided_binary_path(p);
             Some(p.to_string())
@@ -200,6 +211,8 @@ pub(crate) async fn run_exec(
         binary_path: ssl_binary_path,
         db_path,
         server_listen: Some(server_listen.to_string()),
+        content_hash,
+        ssl,
         ..TraceConfig::for_record()
     };
 

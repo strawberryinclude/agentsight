@@ -61,6 +61,8 @@ pub(crate) struct TraceConfig {
     pub(crate) ssl_raw_data: bool,
     pub(crate) process: bool,
     pub(crate) trace_net: bool,
+    /// Hash file content before the agent's first write and after its last write.
+    pub(crate) content_hash: bool,
     pub(crate) process_seed_pids: Vec<PidSeed>,
     pub(crate) stdio: bool,
     pub(crate) stdio_uid: Option<u32>,
@@ -91,6 +93,7 @@ impl TraceConfig {
             ssl_http: true,
             process: true,
             trace_net: true,
+            content_hash: true,
             stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
             system: true,
             system_interval: 2,
@@ -310,6 +313,9 @@ fn build_process_args(cfg: &TraceConfig) -> Vec<String> {
     let mut args = Vec::new();
     if cfg.trace_net {
         args.push("--trace-net".to_string());
+    }
+    if cfg.content_hash {
+        args.push("--content-hash".to_string());
     }
     if let Some(pid) = cfg.pid {
         args.extend(["-p".to_string(), pid.to_string()]);
