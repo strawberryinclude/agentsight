@@ -1,0 +1,7 @@
+CHANGES.md   created   created        before OK  (-)  after OK  (userspace)
+README.md    modified  atomic_replace before OK  (userspace)  after OK  (userspace)
+calc.py      modified  atomic_replace before OK  (userspace)  after OK  (userspace)
+config.json  modified  atomic_replace before OK  (userspace)  after OK  (userspace)
+notes.txt    read      read_only      before OK  (userspace)  after OK  (userspace)
+old.log      deleted   deleted        before OK  (userspace)  after OK  (-)
+RESULT: PASS

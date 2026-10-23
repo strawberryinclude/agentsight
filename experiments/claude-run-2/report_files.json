@@ -1,0 +1,101 @@
+[
+  {
+    "path": "/home/parallels/agentsight-experiment/project/README.md",
+    "outcome": "modified",
+    "method": "atomic_replace",
+    "before_sha256": "290e3f3af52ab9faa7a44ec75540558114cbaef2771088a24b16d01d1ce47b2c",
+    "before_source": "userspace",
+    "after_sha256": "85dc834f59eca16719adce8d6560bb5a20a2806994b66627d63efd0e029c189c",
+    "after_source": "userspace",
+    "inodes": [
+      "8388610:2898917:0",
+      "8388610:2898914:1"
+    ],
+    "renamed_from": "/home/parallels/agentsight-experiment/project/README.md.tmp.7630.82ecbdb9029a",
+    "comm": "Bun Pool 1",
+    "first_seen_ms": 1792255592964,
+    "last_seen_ms": 1792255602660
+  },
+  {
+    "path": "/home/parallels/agentsight-experiment/project/calc.py",
+    "outcome": "modified",
+    "method": "atomic_replace",
+    "before_sha256": "1106565a68d9fa213b3ea12ae0df8a3b7318359ba0ae64fde04f75f095595f2a",
+    "before_source": "userspace",
+    "after_sha256": "0825f76e4924c2e610b2ac94d5f2cc4d708272ee7bded5f40955d62e19b18871",
+    "after_source": "userspace",
+    "inodes": [
+      "8388610:2898913:0",
+      "8388610:2900042:0"
+    ],
+    "renamed_from": "/home/parallels/agentsight-experiment/project/calc.py.tmp.7630.c794d54e07ee",
+    "comm": "Bun Pool 0",
+    "first_seen_ms": 1792255592964,
+    "last_seen_ms": 1792255600995
+  },
+  {
+    "path": "/home/parallels/agentsight-experiment/project/config.json",
+    "outcome": "modified",
+    "method": "atomic_replace",
+    "before_sha256": "bebc37867e1b8d44fac56bfe4110c40d4711dd464e88ccc89b1b7f8205d69189",
+    "before_source": "userspace",
+    "after_sha256": "e550e486f4df879c799d9b6381eca3fc92d8829e3f96bd91586f7e05ea411632",
+    "after_source": "userspace",
+    "inodes": [
+      "8388610:2898914:0",
+      "8388610:2898913:1"
+    ],
+    "renamed_from": "/home/parallels/agentsight-experiment/project/config.json.tmp.7630.ac9c4ecb1b42",
+    "comm": "Bun Pool 0",
+    "first_seen_ms": 1792255592964,
+    "last_seen_ms": 1792255601402
+  },
+  {
+    "path": "/home/parallels/agentsight-experiment/project/notes.txt",
+    "outcome": "read",
+    "method": "read_only",
+    "before_sha256": "ef09e46b9a14e4757719614793687dd0161532e9287df469945fecdd736891af",
+    "before_source": "userspace",
+    "after_sha256": "ef09e46b9a14e4757719614793687dd0161532e9287df469945fecdd736891af",
+    "after_source": "userspace",
+    "inodes": [
+      "8388610:2898901:0"
+    ],
+    "renamed_from": null,
+    "comm": "cat",
+    "first_seen_ms": 1792255592964,
+    "last_seen_ms": 1792255592964
+  },
+  {
+    "path": "/home/parallels/agentsight-experiment/project/old.log",
+    "outcome": "deleted",
+    "method": "deleted",
+    "before_sha256": "8b4d80e0cd5b575c5870d9137003e9f08d46bdad10a9502929d731019ccb6028",
+    "before_source": "userspace",
+    "after_sha256": null,
+    "after_source": null,
+    "inodes": [
+      "8388610:2898919:0"
+    ],
+    "renamed_from": null,
+    "comm": "rm",
+    "first_seen_ms": 1792255596930,
+    "last_seen_ms": 1792255602778
+  },
+  {
+    "path": "/home/parallels/agentsight-experiment/project/CHANGES.md",
+    "outcome": "created",
+    "method": "created",
+    "before_sha256": null,
+    "before_source": null,
+    "after_sha256": "a70e9c9a7216ee183838aa859a8a2f3043e2d9b9fbfa0db8e7a3c5bf2c02db49",
+    "after_source": "userspace",
+    "inodes": [
+      "8388610:2898917:1"
+    ],
+    "renamed_from": "/home/parallels/agentsight-experiment/project/CHANGES.md.tmp.7630.dc9546cb3b24",
+    "comm": "Bun Pool 0",
+    "first_seen_ms": 1792255603414,
+    "last_seen_ms": 1792255604017
+  }
+]

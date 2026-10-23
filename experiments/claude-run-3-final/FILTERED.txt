@@ -1,0 +1,1 @@
+Filtered for publication: 6 of 271 report rows and 8 of 282 inode rows kept (paths under /home/parallels/agentsight-experiment/project/). The rest are files of Claude Code itself (configuration, credentials, caches, CA certificates, shared libraries).

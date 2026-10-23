@@ -1,0 +1,8 @@
+File content (sha256, first 12 hex; --json for full hashes)
+outcome    method         before               after                path
+modified   atomic_replace 290e3f3af52a user    85dc834f59ec user    /home/parallels/agentsight-experiment/project/README.md
+modified   atomic_replace 1106565a68d9 user    0825f76e4924 user    /home/parallels/agentsight-experiment/project/calc.py
+modified   atomic_replace bebc37867e1b user    e550e486f4df user    /home/parallels/agentsight-experiment/project/config.json
+read       read_only      ef09e46b9a14 user    ef09e46b9a14 user    /home/parallels/agentsight-experiment/project/notes.txt
+deleted    deleted        8b4d80e0cd5b user    -                    /home/parallels/agentsight-experiment/project/old.log
+created    created        -                    a70e9c9a7216 user    /home/parallels/agentsight-experiment/project/CHANGES.md

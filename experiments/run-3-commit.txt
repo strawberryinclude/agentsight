@@ -1,0 +1,1 @@
+9a5bc76 Add file content hashing: before first write, after last write

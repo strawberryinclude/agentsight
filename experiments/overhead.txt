@@ -1,0 +1,14 @@
+Workload: 200 files x 64 KiB, half in place, half temp+rename; time measured inside the workload
+baseline     median    21.4 ms   min    18.4   max    23.7   (n=5)
+record       median    33.4 ms   min    29.8   max    36.7   (n=5)
+record+hash  median    60.2 ms   min    59.0   max    63.8   (n=5)
+
+== Correctness of the last record+hash run (every file vs sha256sum)
+  after ok                      200 / 200
+  before from None              100 / 200
+  before from kernel_ima        100 / 200
+  before ok                     100 / 200
+  before unknown                100 / 200
+  modified/in_place             100 / 200
+  replaced/atomic_replace       100 / 200
+RESULT: no wrong hashes; 100 'before' and 0 'after' unknown
